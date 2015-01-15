@@ -25,6 +25,7 @@ There to decrypt the password. You will be prompted for the passphrase.
 The tool will prompt you for these when they are needed.
 
 The steps to store a password are:
+
 1. First, you will search (see below) for the password. If it already exists,
    you must update it. Skip down this document a bit for instructions. 
 2. Secondly, you need to know which clearance level to use.
@@ -41,6 +42,7 @@ it.
 This should not be done very often, but here's how.
 
 To add a new clearance level, select its place in the hierarchy. Then
+
 1. Choose a suitable passphrase. You know the drill, make it difficult enough.
 2. Create the clearance level using There.
 3. If there is a higher clearance level, which should be able to access the
@@ -66,28 +68,31 @@ the new passphrase is correctly stored on the higher clearance levels.
 ## Updating passwords
 
 To update an existing password, you need to
+
 1. search for that password
 2. store the new password with the same id.
 
 
-# Installation
+# Install
 
-## Install prerequisites:
+## Install prerequisites
 
   * ncurses-devel
 
-  * "perl(Curses)"
-  * "perl(Curses::UI)"
-  * "perl(Math::Pari)"
-  * "perl(Crypt::Random)"
-  * "perl(Crypt::Rijndael)"
-  * "perl(Digest::SHA)"
-  * "perl(Object::Generic)"
-  * "perl(AppConfig)"
+  * Perl modules
+  ** Curses
+  ** Curses::UI
+  ** Math::Pari
+  ** Crypt::Random
+  ** Crypt::Rijndael
+  ** Digest::SHA
+  ** Object::Generic
+  ** AppConfig
 
+
+## Install There
 
 ```shell
-
 mkdir -p /data00/there
 chmod a+rwx,g+s /data00/there
 
@@ -97,7 +102,7 @@ make test
 sudo make install
 ```
 
-# Uninstallation
+# Uninstall
 
 ```shell
 sudo make uninstall
