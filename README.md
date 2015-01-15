@@ -80,14 +80,14 @@ To update an existing password, you need to
   * ncurses-devel
 
   * Perl modules
-  ** Curses
-  ** Curses::UI
-  ** Math::Pari
-  ** Crypt::Random
-  ** Crypt::Rijndael
-  ** Digest::SHA
-  ** Object::Generic
-  ** AppConfig
+    * Curses
+    * Curses::UI
+    * Math::Pari
+    * Crypt::Random
+    * Crypt::Rijndael
+    * Digest::SHA
+    * Object::Generic
+    * AppConfig
 
 
 ## Install There
