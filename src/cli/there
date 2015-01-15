@@ -1,0 +1,1265 @@
+#!/usr/bin/perl -wT
+
+use strict;
+use Curses;
+use Curses::UI;
+use Curses::UI::Common;
+
+use lib "../perllib";
+use There::UI::CookedTextEntry;
+use There::PasswordGenerator;
+use There::UI::BetterListbox;
+use There::UI::BetterPopupmenu;
+use There::API;
+use There::Directory::Item;
+use There::Log;
+use There::Conf;
+
+my $version = '1.0';
+
+my $conf = new There::Conf;
+$ENV{'ESCDELAY'} = 10;
+my $cui = new Curses::UI( -color_support => 1,
+			-default_colors => 1);
+
+sub warner_bros
+{ 
+  my $log = new There::Log; 
+  $log->syslog("info", join " ", @_); 
+  my $mess = "@_"; 
+  chomp $mess; 
+  $cui->dialog(-title=>"Warning",
+	       -message => $mess,
+	       -routines => { abort => \&abort_dialog },
+	       -bindings  => { CUI_ESCAPE(), 'abort'}, 
+	       -buttons => [{					
+			     -label => 'I see.',
+			     -value => 0,
+			     -onpress => sub 
+			   {
+			     my $this = shift;
+			     $this->parent->loose_focus();
+			   },
+			    }
+			   ],
+	      );
+}
+
+local $SIG{"__WARN__"} = \&warner_bros;
+
+local $SIG{"__DIE__"} = sub { my $log = new There::Log; $log->syslog("info", join " ", @_); die @_;};
+
+# show a dialog
+sub exit_dialog()
+{
+  my $return = shift()->dialog(
+			       -message   => "Do you really want to quit?",
+			       -buttons   => ['ok', 'cancel'],
+			       -values    => [1,0],
+			       -title     => "Quitting", 
+			       -routines => { abort => \&abort_dialog },
+ 			       -bindings  => { CUI_ESCAPE(), 'abort'},
+			      );
+  
+  exit(0) if $return;
+}
+
+# close a dialog
+sub abort_dialog
+{
+  my $self = shift();
+
+  # select a button with untrue value if there is one
+  my $buttonbox = $self->getobj("buttons");
+  for(my $idx=0;$idx < scalar(@{$buttonbox->{-buttons}}); $idx++)
+  {
+    if(!$buttonbox->{-buttons}->[$idx]->{-value})
+    {
+      $buttonbox->{-selected} = $idx;
+      last;
+    }
+  }
+  $self->loose_focus();
+}
+
+my $readonly = There::API->new()->storage->writable() ? "" : " - READ ONLY";
+
+my $win1 = $cui->add(
+		     'win1', 'Window',
+		     -border => 1,
+		     -y    => 0,
+		     -bfg  => 'red',
+		     -title => "There $version - password search". $readonly,
+		     -titlefullwidth => 1,
+		    );
+
+$win1->set_binding( \&newpassword , "\cW" );
+$win1->set_binding( \&newclearance , "\cN" );
+$win1->set_binding( \&change_passphrase , "\cP" );
+
+sub do_the_grep
+{
+  my ($self, @jotain) = @_;
+  &main::grepit($self->parent()->getobj("mylistbox"), @jotain);
+  $self->parent()->draw();
+}
+
+sub refresh_list
+{
+  my $thing = shift;
+  my $cui = $thing->root();
+  my $listbox = $cui->getobj("win1")->getobj('mylistbox');
+
+  my $directory = new There::Directory;
+  my $items = $directory->search("");
+
+  my (@ids, %labels) = ();
+  foreach my $item (sort { $a->id() cmp $b->id() 
+	        	     or $a->clearance() cmp $b->clearance() } @$items)
+  {
+    my $uniq_id = $item->clearance(). "/" . $item->id();
+    push @ids, $uniq_id;
+    $labels{$uniq_id} = "(" . $uniq_id . ") " . $item->searchstring();
+  }
+
+  $listbox->values(\@ids);
+  $listbox->labels(\%labels);
+  $listbox->origlabels(\%labels);
+  $listbox->draw();
+}
+
+my $searchbox = $win1->add(
+			   'searchbox', 'There::UI::CookedTextEntry',
+			   -x => 0,
+			   -y => -2,
+			   -homeonblur => 0,
+			   -onkeypress => \&do_the_grep,
+			   -border => 1,
+			   -bfg => 'white',
+			   -title => 'Search',
+			   -titlereverse => 0,
+			  );
+
+my $legend = $win1->add(
+			'legend', 'There::UI::BetterListbox',
+			-height => 1,
+			-y => -1,
+			-x => 1,
+			-focusable => 0,
+			-onfocus => sub {shift()->parent()->focus_next()},
+			-values =>
+			['<reverse>^W</reverse> New password '.
+			 '<reverse>^N</reverse> New clearance '.
+			 '<reverse>^P</reverse> Change clearance passphrase '.
+			 '<reverse>^X</reverse> Exit']); 
+
+$searchbox->set_binding( \&refresh_list, "\cL");
+$searchbox->set_binding( sub {shift()->parent()->focus_prev()}, 
+			 KEY_DOWN() );
+$searchbox->set_binding( sub {shift()->parent()->focus_next()}, 
+			 KEY_UP() );
+
+my $listbox = $win1->add(
+			 'mylistbox', 'There::UI::BetterListbox',
+			 -radio     => 0,
+			 -htmltext  => 1,
+			 -y => 1,
+			 -height => $win1->height() - 7,
+			);
+
+refresh_list($searchbox);
+
+$listbox->height($listbox->height()-1);
+
+$listbox->set_routine('grepit', \&grepit);
+$listbox->set_binding('grepit', '\cl');
+$listbox->set_routine('kliks', \&kliks);
+$listbox->set_binding('kliks', KEY_ENTER());
+
+sub grepit
+{
+  my $log = new There::Log;
+  
+  my ($self, @jotain) = @_;
+
+  my $labels = $self->labels();
+  my $origlabels = $self->origlabels();
+  my $searchterms = $self->parent()->getobj("searchbox")->get();
+  
+  my @searchterms = ();
+
+  my $escaped = qr/\\./;
+
+  my $parened   = qr/\(($escaped|[^\)])+\)/;
+  my $bracketed = qr/\[($escaped|[^\]])+\]/;
+  my $quoted    = qr/\'($escaped|[^\'])+\'/;
+  my $dquoted   = qr/\"($escaped|[^\"])+\"/;
+
+  my $notbegin = qr/[^(["' ]/;
+  
+  my $word = qr/($escaped|$notbegin|$parened|$bracketed|$quoted|$dquoted)+/;
+
+ SEARCHTERM:
+  while($searchterms)
+  {
+    
+    if(
+       # match a word and remove it
+       $searchterms =~ s/^\s*($word)\s*// 
+      )
+    {
+      my $term = $1;
+      $term =~ s/^"(.*)"$/$1/ or $term =~ s/^'(.*)'$/$1/;
+      my $re;
+
+      eval {$re = qr($term)i};
+      if($@)
+      {
+	#    warn "that's a bad regexp: '$term'. $@";
+	$term = quotemeta($term);
+	$re = qr($term)i;
+      }
+
+      push @searchterms, $re;
+      $log->syslog("debug", "search term is '$re'");
+    }
+    else # probably found an unmatched opening parenthesis of some kind
+    {
+      last SEARCHTERM;
+    }
+  }
+
+  my @matches = keys %$origlabels;
+
+  foreach my $re (@searchterms)
+  {
+    @matches = grep $origlabels->{$_} =~ $re, @matches;    
+  }
+  
+  my $anyterm = join("|", @searchterms);
+
+  my %newlabels = ();
+  
+  foreach my $matched (@matches)
+  {
+    $newlabels{$matched} = $origlabels->{$matched};
+    $newlabels{$matched} =~ s/($anyterm)/<bold>$1<\/bold>/g;
+  }
+
+  ;
+  if(@matches)
+  {
+    my %sortvalues = (); # sort by id then clearance
+    map {$sortvalues{$_} = join"/",@{[split'/',$_]}[1,0]} keys %$origlabels; 
+    $self->values(sort {$sortvalues{$a} cmp $sortvalues{$b}} @matches);
+    $self->labels(\%newlabels);
+  }
+  else
+  {
+    Curses::beep();
+  }
+}
+
+sub add_password
+{
+  my $buttons = shift;
+  my $pwewin = $buttons->parent();
+  my $cui = $pwewin->root();
+  my $api = new There::API;
+
+  my $id = $pwewin->getobj('id')->get();
+  my $idx =$pwewin->getobj('clr')->get();
+  unless($idx)
+  {
+    warn "Pick a clearance. Any clearance\n";
+    return;
+  }
+  my $clearance;
+  if($idx =~ /^\d+$/)
+  {
+    # valittu menusta
+    $clearance = ( $api->list_clearances() )[$idx-1];
+  }
+  else
+  {
+    # valittu avaamatta menua
+    $clearance = $idx;
+  }
+
+  my $desc = $pwewin->getobj('desc')->get();
+
+  my $directory = new There::Directory;
+
+  if($directory->get_entry($clearance, $id))
+  {
+    warn "Entry with id '$id' (clearance '$clearance') already exists.\n";
+    return;
+  }
+
+  my $data = get_data_string($cui, "the new password", "", 1);
+  unless(defined $data)
+  {
+    return;
+  }
+  my $pass;
+
+  my $aborted = 0;
+  while(1)
+  {  
+    $pass = get_passphrase($cui, "passphrase for '$clearance'", $clearance);
+    if(! defined $pass)
+    {
+      $aborted = 1;
+      return;
+    }
+    $api->check_passphrase($clearance, $pass) and last;
+    $cui->status("No matches.");
+    Curses::beep();
+  }
+  $cui->nostatus();
+
+  my $dir = new There::Directory();
+
+  $api->create_password($clearance, $id, $data, $pass) or die "aargs";
+  $dir->update($id, $clearance, $desc) or die "whaddafuck";
+
+  refresh_list($cui->getobj("win1")->getobj("searchbox"));
+  return 1;
+}
+
+sub newpassword
+{
+  my $self = shift;
+
+  my $y = 0;
+  my $x = 11;
+
+  my $api = new There::API;
+  my @clearances = $api->list_clearances();
+
+  unless(@clearances)
+  {
+    warn "  Add a clearance first.\n";
+    return;
+  }
+
+  my $pwewin = $self->add(
+			  'pwewin', 'Window',
+			  -ipad => 1,
+			  -centered => 1,
+			  -border => 1,
+			  -width => 80,
+			  -height => 10,
+			  -bfg  => 'red',
+			  -title => "Create a new password",
+			  -titlefullwidth => 1,
+			  -routines => { abort => \&abort_dialog },
+			  -bindings  => { CUI_ESCAPE(), 'abort'},
+			 );
+  
+  my $label1 = $pwewin->add(
+			 'label1', 'Label',
+			 -text  => "ID: ",
+			 -y => $y, -x => 0,
+			 -textalignment => "left",
+			);
+
+  my $te1 = $pwewin->add(
+			 'id', 'TextEntry',
+			 -y => $y++, -x => $x,
+			 -regexp => '/^[-\w]*$/',
+			);
+
+  my $label2 = $pwewin->add(
+			    'label2', 'Label',
+			    -text => "Clearance: ",
+			    -y => $y, -x => 0,
+			    -textalignment => "left",
+			   );
+
+  my %clearances = ();
+  my $i = 1;
+  foreach my $clr (@clearances) 
+  {
+    $clearances{$i++} = $clr;
+  }
+  @clearances = keys %clearances;
+
+  my $dropdead = $pwewin->add(
+			      'clr', 'There::UI::BetterPopupmenu',
+			      -y => $y++, -x => $x,
+			      -values => \@clearances,
+			      -labels => \%clearances,
+			     );
+
+  my $label3 = $pwewin->add(
+			    'label3', 'Label',
+			    -text => "Description: ",
+			    -y => $y++, -x => 0,
+			    -textalignment => "left",
+			   );
+
+  my $te2 = $pwewin->add(
+			 'desc', 'TextEntry',
+			 -y => $y++, -x => 0,
+			 -width => 78,
+			);
+
+  my $buttons = $pwewin->add(
+			     'buttons', 'Buttonbox',
+			     -y => ($y += 1),
+			     -buttons => [
+					{ 
+					 -label => 'Create',
+					 -value => 1,
+					 -onpress => sub {
+					   my $this = shift;
+					   
+					   if(defined add_password($this))
+					   {
+					     $this->parent->loose_focus();
+					   }
+					 },
+					},
+					{ 
+					 -label => 'No, wait',
+					 -value => 0,
+					 -onpress => sub {
+					   my $this = shift;
+					   $this->parent->loose_focus();
+					 },
+					},
+					 ],
+			    );
+
+  $pwewin->modalfocus();
+  $self->delete('pwewin');
+  $self->draw();
+}
+
+sub change_password
+{
+  my ($cui, $clr, $id) = @_;
+  my $api = new There::API;
+
+  my $data = get_data_string($cui, "data to be stored", "", 1);
+
+  return unless defined $data;
+
+  my $passphrase;
+  my $aborted = 0;
+
+  while(1)
+  {  
+    $passphrase = get_passphrase($cui, "passphrase for '$clr'", $clr);
+    if(! defined $passphrase)
+    {
+      $aborted = 1;
+      return;
+    }
+    $api->check_passphrase($clr, $passphrase) and last;
+    $cui->status("No matches.");
+    Curses::beep();
+  }
+  $cui->nostatus();
+  my $rv = $api->change_password($clr, $id, $data, $passphrase) or die "aargs";
+
+  my $pass = $api->get_password($clr, $id, $passphrase);
+  
+  my $viewer =   $cui->getobj("viewin")->getobj("mytextviewer");
+  $viewer->text($pass->get_all());
+  $viewer->do_routine("cursor-end");
+
+  $cui->draw();
+  return;
+}
+
+
+
+sub get_passphrase
+{
+  my ($self, $prompt, $clearance) = @_;
+  my $cui = $self->root();
+
+  my $win1 = $self->getobj("win1");
+  my $already_recursed = 0;
+  my $winname = "pwe1";
+  if($win1->getobj($winname))
+  {
+    $winname++;
+    $already_recursed = 1;
+  }
+
+
+  my $pwe1 = $win1->add( $winname, 'PasswordEntry',
+			 -width => 72,
+			 -height => 5,
+			 -y => 14,
+			 -centered => 1,
+			 -title => "Enter $prompt",
+			 -titlereverse => 1,
+			 -border => 1,
+		       );
+
+  $pwe1->set_routine(abort => 
+		     sub {
+		       my $this =shift;
+		       $this->{aborted}=1;
+		       $this->loose_focus();
+		     }
+		   );
+		  
+  $pwe1->set_binding(abort => CUI_ESCAPE());
+
+  my $legend = $win1->getobj("legend");
+
+  my @savelegend = $legend->values();
+
+  if($already_recursed)
+  {
+    $legend->values(["<reverse><Esc></reverse> Cancel"]);
+  }
+  else 
+  {
+    $legend->values(["<reverse>^U</reverse> Use a higher level clearance <reverse><Esc></reverse> Cancel"]);
+    
+    $pwe1->set_routine(recursive_passphrase => sub{recursive_passphrase($pwe1, $clearance)});
+    $pwe1->set_binding(recursive_passphrase => "\cU");
+  }
+  
+  $pwe1->modalfocus();
+  $legend->values(@savelegend);
+
+  my $pass1 = undef;
+  if(! defined $pwe1->{aborted})
+  {
+    $pass1 = $pwe1->get();
+  }
+  $win1->delete( $winname );
+  $cui->draw();
+  return $pass1;
+}
+
+sub recursive_passphrase
+{
+  my($self, $something) = @_;
+  my $cui = $self->root();
+
+  my $win1 = $cui->getobj("win1");
+
+  my $cle1 = $win1->add( 'cle1', 'Window',
+			 -width => 72,
+			 -height => 5,
+			 -y => 14,
+			 -centered => 1,
+			 -title => "Choose a clearance",
+			 -titlereverse => 1,
+			 -border => 1,
+		       );
+
+  $cle1->set_routine(abort => 
+		     sub {
+		       my $this =shift;
+		       $this->{aborted}=1;
+		       $this->loose_focus();
+		     }
+		    );
+		  
+  $cle1->set_binding(abort => CUI_ESCAPE());
+
+  my $prevclr = $something;
+  my $clearances = bfs($prevclr);
+  my @clearances = keys %{$clearances};
+
+  my $chooser = $cle1->add( 'chooser', 'There::UI::BetterPopupmenu',
+			    -height => 3,
+			    -centered => 1,
+			    -border => 1,
+			    -values => \@clearances,
+			    -onblur => sub {shift()->parent()->loose_focus()},
+			    );
+
+  my $fuckbutton = $cle1->add( 'fuck' => "Buttonbox" , -buttons => [], -x => 42 ); 
+  # allow the chooser to be a looser
+
+  $cle1->modalfocus();
+  if($cle1->{aborted} or not defined $chooser->get())
+  {
+    $win1->delete("cle1");
+    $win1->draw();
+    return;
+  }
+
+  my $clearance = $chooser->get();
+  my $dir = new There::Directory;
+  my $api = new There::API;
+  my $conf = new There::Conf;
+
+  
+  my $passphrase;
+  while(1)
+  {
+      $passphrase = get_passphrase($cui, "passphrase for '$clearance'", $clearance);
+      unless(defined($passphrase)) # user pressed esc
+      {
+	  $win1->delete("cle1");
+	  $win1->draw();
+	  return;
+      }
+      last if $api->check_passphrase($clearance, $passphrase);
+  }
+  my @chain = @{$clearances->{$clearance}};
+  while(@chain)
+  {
+    my $link = pop @chain;
+    last if($link eq $prevclr);
+    
+    my $nextlink = $chain[-1];
+    
+    my $found = $dir->clearance_search($link, 
+				       "Passphrase for clearance $nextlink");
+    
+    my $pass = $api->get_password($link,
+				  $found->[0]->id(),
+				  $passphrase);
+
+    if($conf->debug())
+    {
+      warn "got a passphrase from $link to " . $found->[0]->id() . "\n";
+    }
+    
+    $passphrase = $pass->latest();
+  }
+  
+  my $phrasebox = $cui->getobj("win1")->getobj("pwe1");
+  $phrasebox->text($passphrase);
+  $win1->delete("cle1");
+  $phrasebox->loose_focus();
+  return;
+}
+
+sub bfs
+{
+  my ($source) = shift;
+  my %seen = ();
+  my @fifo = ([$source]);
+  
+  my $dir = new There::Directory;
+
+  while(@fifo)
+  {
+    my $path = pop(@fifo);
+    my $whereami = $path->[-1];
+    next if($seen{$whereami});
+    $seen{$whereami} = $path;
+
+    my $neighbors = $dir->search("Passphrase for clearance $whereami");
+
+    foreach my $neighbor (@$neighbors)
+    {
+      my $neighbor_clearance = $neighbor->clearance();
+      unshift @fifo, [@$path, $neighbor_clearance];
+    }
+  }
+
+  my $conf = new There::Conf;
+
+  if($conf->debug())
+  {
+    foreach my $key (keys %seen)
+    {
+      warn "$key possible, path is ". join "->", @{$seen{$key}};
+    }
+  }
+
+  return \%seen;
+}
+
+sub get_data_string
+{
+  my ($self, $prompt, $daatta, $generaattori) = @_;
+
+  my $cui = $self->root();
+  my $win1 = $self->getobj("win1");
+  $daatta||='';
+  $generaattori ||= 0;
+
+
+  my $te1 = $win1->add( 'te1', 'TextEntry',
+			-text => $daatta,
+			-width => 72,
+			-height => 5,
+			-y => 14,
+			-centered => 1,
+			-title => "Enter $prompt",
+			-titlereverse => 1,
+			-border => 1,
+		      );
+
+  $te1->set_routine(abort => 
+		    sub {
+		      my $this =shift;
+		      $this->{aborted}=1;
+		      $this->loose_focus();
+		    }
+		   );
+		  
+  $te1->set_binding(abort => CUI_ESCAPE());
+
+  if($generaattori)
+  {
+    $te1->set_routine(puppaa => 
+		      sub{
+			my ($self) = @_;
+			my $text = $self->get();
+			my $pos = $self->pos();
+			substr($text,$pos,0,
+			       There::PasswordGenerator::gimme16());
+			$self->text($text);
+			$self->pos($pos+8);
+		      });
+
+    $te1->set_binding(puppaa => "\cr");
+    my $legend = $win1->getobj("legend");
+    my @savelegend = $legend->values();
+    $legend->values(["<reverse>^R</reverse> Randomize"]);
+    $te1->modalfocus();
+    $legend->values(@savelegend);
+  }
+  else
+  {
+    $te1->modalfocus();
+  }
+  
+  my $data_string = undef;
+  unless(defined $te1->{aborted})
+  {
+    $data_string = $te1->get();
+  }
+  $win1->delete( 'te1' );
+  $cui->draw();
+
+  return $data_string;
+}
+
+
+sub get_and_confirm_passphrase
+{
+  my ($cui, $prompt) = @_;
+
+  my $pass1;
+  my $pass2;
+  my $done = 0;
+  my $win1 = $cui->getobj("win1");
+  
+  my $argh = sub {my $self = shift; $self->{aborted}=1; $self->loose_focus()};
+
+  while(!$done)
+  {
+    my $pwe6 = $win1->add( 'pwe6', 'PasswordEntry',
+			   -width => 72,
+			   -height => 5,
+			   -y => 14,
+			   -centered => 1,
+			   -title => "Enter $prompt",
+			   -titlereverse => 1,
+			   -border => 1,
+			 );
+
+    
+    $pwe6->set_routine('argh', $argh);
+    $pwe6->set_binding('argh', CUI_ESCAPE());
+    $pwe6->modalfocus();
+    if($pwe6->{aborted})
+    {
+      $win1->delete( 'pwe6' );
+      return undef;
+    }
+    $pass1 = $pwe6->get();
+    $win1->delete( 'pwe6' );
+
+
+    my $pwe7 = $win1->add( 'pwe7', 'PasswordEntry',
+			   -width => 72,
+			   -height => 5,
+			   -y => 14,
+			   -centered => 1,
+			   -title => "Confirm $prompt",
+			   -titlereverse => 1,
+			   -border => 1,
+			 );
+
+    $pwe7->set_routine('argh', $argh);
+    $pwe7->set_binding('argh', CUI_ESCAPE());
+    $pwe7->modalfocus();
+    if($pwe7->{aborted})
+    {
+      $win1->delete( 'pwe7' );
+      return undef;
+    }
+
+    $pass2 = $pwe7->get();
+    $win1->delete('pwe7');
+
+    if($pass1 eq $pass2)
+    {
+      $done = 1;
+    }
+    else
+    {
+      Curses::beep();
+      warn("Passphrases did not match.\n");
+    }
+  }
+
+  $cui->nostatus();
+  $cui->draw();
+
+  if($pass1 eq $pass2)
+  {
+    return $pass1;
+  }
+  else
+  {
+    return undef;
+  }
+}
+
+sub add_clearance
+{
+  my $buttons = shift;
+  my $clrwin = $buttons->parent();
+  my $cui = $clrwin->root();
+  my $api = new There::API;
+
+  my $name = $clrwin->getobj('name')->get();
+  if(! defined $name or
+     $name =~ m/\// or
+     substr($name,0,1) eq "."
+    )
+  {
+    warn "bad name for clearance: '$name'";
+    $cui->dialog("Bad idea.");
+    return;
+  }
+  if($name eq "")
+  {
+    warn "Empty clearance name given";
+    $cui->dialog("Clearance needs a name.");
+    return 0;
+  }
+
+  my @existing_clearances = $api->list_clearances();
+  if(grep {$_ eq $name} @existing_clearances)
+  {
+    warn "Clearance '$name' already exists.\n";
+    return 0;
+  }
+
+  my $algorithm = (There::API::get_algorithms())[$clrwin->getobj('algo')->get()-1];
+
+  my $pass = get_and_confirm_passphrase($cui, "a passphrase for the new clearance '$name'");
+  unless(defined $pass)
+  {
+    warn "something went wrong while reading the passphrase\n";
+    return 0;
+  }
+
+  my $rv = $api->create_clearance($name, $algorithm, $pass);
+
+  return $rv;
+}
+
+sub newclearance
+{
+  my $cui = shift;
+
+  my $y = 0;
+  my $x = 11;
+
+  my $clrwin = $cui->add(
+			 'clrwin', 'Window',
+			 -ipad => 1,
+			 -centered => 1,
+			 -border => 1,
+			 -width => 42,
+			 -height => 8,
+			 -bfg  => 'red',
+			 -title => "Create a new clearance",
+			 -titlefullwidth => 1,
+			 -routines => { abort => \&abort_dialog },
+			 -bindings  => { CUI_ESCAPE(), 'abort'},
+			);
+
+  my $label1 = $clrwin->add(
+			 'label1', 'Label',
+			 -text  => "Name: ",
+			 -y => $y, -x => 0,
+			 -textalignment => "left",
+			);
+
+  my $te1 = $clrwin->add(
+			 'name', 'TextEntry',
+			 -y => $y++, -x => $x,
+			 -regexp => '/^[^\/]*$/',
+			);
+
+  my $label2 = $clrwin->add(
+			    'label2', 'Label',
+			    -text => "Algorithm: ",
+			    -y => $y, -x => 0,
+			    -textalignment => "left",
+			   );
+
+  my @algorithms = There::API::get_algorithms();
+  my $favourite = There::API::get_recommended_algorithm();
+  my %algorithms = ();
+  my $i = 1;
+  my $sel = 1;
+  foreach my $algo (@algorithms) 
+  {
+    $sel = $i if $favourite eq $algo;
+    $algorithms{$i++} = $algo;
+  }
+  @algorithms = keys %algorithms;
+
+  my $dropdead = $clrwin->add(
+			      'algo', 'There::UI::BetterPopupmenu',
+			      -y => $y++, -x => $x,
+			      -values => \@algorithms,
+			      -labels => \%algorithms,
+			      -selected => $sel,
+			     );
+
+  my $buttons = $clrwin->add(
+			     'buttons', 'Buttonbox',
+			     -y => ($y += 1),
+			     -buttons => [
+					{ 
+					 -label => 'Ok',
+					 -onpress => sub {
+					   my $this = shift;
+					   my $r=add_clearance($this);
+					   $this->parent->loose_focus()
+					     unless(defined $r and !$r);
+					   # 0 means try again
+					   $this->loose_focus();
+					   $this->parent->getobj("name")->focus();
+					   $this->parent()->draw();
+					 },
+					},
+					{ 
+					 -label => 'Cancel',
+					 -onpress => sub {
+					   my $this = shift;
+					   $this->parent->loose_focus();
+					 },
+					},
+					 ],
+			    );
+
+  $clrwin->modalfocus();
+  $cui->delete('clrwin');
+  $cui->draw();
+}
+
+
+sub change_passphrase
+{
+  my $cui = shift;
+
+  my $y = 0;
+  my $x = 11;
+
+  my $api = new There::API;
+  my @clearances = $api->list_clearances();
+  unless(@clearances)
+  {
+    warn "No clearances defined. Use <^N> to create a clearance\n";
+    return;
+  }
+
+  my $clrwin2 = $cui->add(
+			  'clrwin2', 'Window',
+			  -ipad => 1,
+			  -centered => 1,
+			  -border => 1,
+			  -width => 42,
+			  -height => 8,
+			  -bfg  => 'red',
+			  -title => "Change clearance passphrase",
+			  -titlefullwidth => 1,
+			  -routines => { abort => \&abort_dialog },
+			  -bindings  => { CUI_ESCAPE(), 'abort'},
+			 );
+
+  my $label2 = $clrwin2->add(
+			     'label2', 'Label',
+			     -text => "Clearance: ",
+			     -y => $y, -x => 0,
+			     -textalignment => "left",
+			    );
+
+  my $dropdead = $clrwin2->add(
+			       'clearance', 'There::UI::BetterPopupmenu',
+			       -y => $y++, -x => $x,
+			       -values => \@clearances,
+			     );
+
+  my $buttons = $clrwin2->add(
+			      'buttons', 'Buttonbox',
+			      -y => ($y += 1),
+			      -buttons => [
+					 { 
+					  -label => 'Ok',
+					  -onpress => sub {
+					    my $this = shift;
+					    my $r=edit_clearance($this);
+					    $this->parent->loose_focus()
+					      unless(defined $r and !$r);
+					    # 0 means try again
+					    $this->loose_focus();
+					    $this->parent->getobj("clearance")->focus();
+					    $this->parent()->draw();
+					  },
+					 },
+					 { 
+					  -label => 'Cancel',
+					  -onpress => sub {
+					    my $this = shift;
+					    $this->parent->loose_focus();
+					  },
+					 },
+					  ],
+			     );
+  
+  $clrwin2->modalfocus();
+  $cui->delete('clrwin2');
+  $cui->draw();
+  
+}
+
+sub edit_clearance
+{
+  my $this = shift;
+  my $cui = $this->root();
+  my $clearancebox = $cui->getobj("win1")->getobj("clrwin2")->getobj("clearance");
+  my $clearance = $clearancebox->get();
+  my $api = new There::API;
+
+  return 0 unless defined $clearance;
+
+  my $passphrase = "";
+  while(1)
+  {  
+      $passphrase = get_passphrase($cui, "the old passphrase for clearance '$clearance'", $clearance);
+      return 0 unless defined $passphrase; # user pressed esc
+      last if($api->check_passphrase($clearance,$passphrase))
+  }
+
+  my $new_passphrase = get_and_confirm_passphrase($cui, "the new passphrase for clearance '$clearance'");
+
+  return 0 unless(defined $new_passphrase);
+
+  my $rv = $api->change_passphrase($clearance, $passphrase, $new_passphrase);
+
+  $this->parent->draw();
+
+  if(defined $rv)
+  {
+     $cui->dialog("Changed the passphrase for clearance '$clearance'\n");
+     $this->parent->loose_focus() 
+  }
+  else
+  {
+      warn "ARGH! Failed to change the passphrase for clearance '$clearance'.\n";
+    $this->parent->focus();
+  }
+  #  $this->loose_focus();
+  
+}
+
+sub kliks
+{
+  my ($self, @jotain) = @_;
+  $self->do_routine('option-select');
+
+  my $sel = $self->get();
+
+  my $cui = $self->root();
+
+  my($clr,$id) = split/\//,$sel;
+
+  my $dir = new There::Directory;
+  my $item = $dir->get_entry($clr, $id);
+  my $desc = $item->searchstring();
+
+  my $legend = $win1->getobj("legend");
+  my @savelegend = $legend->values();
+  $legend->values([""]);
+
+  my $return = $self->root()->dialog(
+				     -message   => "$desc\n\nId: $id\nClearance: $clr",
+				     -buttons   => 
+				     [ 
+				    { 
+				     -label => '< Show >',
+				     -value => 1,
+				     -onpress => sub {
+				       my $this = shift;
+				       $this->parent->loose_focus();
+				     }
+				    },
+				    { 
+				     -label => '< Edit description >',
+				     -value => 2,
+				     -onpress => sub {
+				       my $this = shift;
+				       $this->parent->loose_focus();
+				     }
+				    },
+				      'cancel',
+				     ],
+				     -routines => { abort => \&abort_dialog },
+				     -bindings  => { CUI_ESCAPE(), 'abort'},
+				    );
+  $legend->values(@savelegend);
+
+  return unless $return; # cancel or esc
+
+  if($return == 1)
+  {
+    my ($clr, $id) = split('/', $sel);
+    my $api = new There::API;
+
+    my $passphrase;
+    while(1)
+    {
+	$passphrase = get_passphrase($cui, "passphrase for clearance '$clr'", $clr);
+	return unless defined $passphrase;
+	last if $api->check_passphrase($clr,$passphrase);
+    }
+    if(my $pass = $api->get_password($clr, $id, $passphrase))
+    {
+      my $win2 = $cui->add('viewin', 'Window',
+			   -ipad => 1,
+			   -centered => 0,
+			   -border => 1,
+			   -height => 20,
+			   -bfg => 'red',
+			   -title => "($sel) $desc",
+			   -titlefullwidth => 1,
+			   -routines => { abort => \&abort_dialog,
+					},
+			   -bindings  => { CUI_ESCAPE(), 'abort', 
+					 },
+
+			  );
+
+      my $text = $pass->get_all();
+
+      my $viewer = $win2->add(
+			      'mytextviewer', 'TextViewer',
+			      -text => $text,
+			      -height => 14,
+			     );
+      $viewer->do_routine("cursor-end");
+
+      my $buttons = $win2->add(
+			       'buttons', 'Buttonbox',
+			       -y => 15,
+			       -buttons => [
+					  {
+					   -label => 'Thxbye',
+					   -value => 0,
+					   -onpress => sub 
+					 {
+					   my $this = shift;
+					   $this->parent->loose_focus();
+					 }
+					  },
+
+					  {
+					   -label => 'Update',
+					   -onpress => \&another_kliks,
+					   -value => 42,
+					  }
+					   ],
+			      );
+      $buttons->focus();
+      $win2->modalfocus();
+      $cui->delete('viewin');
+      $cui->draw;
+    }
+    else
+    {
+      Curses::beep();
+    }
+  }
+  elsif($return == 2)
+  {
+    edit_description($cui, $sel);
+  }
+  $searchbox->focus();
+  $cui->draw();
+}
+
+sub edit_description
+{
+  my ($cui, $sel) = @_;
+  my ($clr,$id) = split(/\//,$sel);
+  die "hard" unless( defined($clr) and defined($id) and defined($cui));
+
+  my $dir = new There::Directory;
+  my $entry = $dir->get_entry($clr, $id);
+  unless($entry)
+  {
+    warn "Could not find the entry anymore. Strange.";
+    return;
+  }
+
+  my $new_data = get_data_string($cui, "Please", $entry->searchstring());
+  return unless $new_data;
+
+  unless($dir->update($id, $clr, $new_data))
+  {
+    warn "SNAFU.";
+    return;
+  }
+  refresh_list($cui);
+  return 1;
+}
+
+
+sub another_kliks
+{
+  my $this = shift;
+  my $cui = $this->root();
+  my $listbox = $cui->getobj("win1")->getobj("mylistbox");
+  my $sel = $listbox->get();
+  my ($clr, $id) = split('/', $sel);
+
+  my $rv = change_password($cui, $clr, $id);
+
+#  $pass = $api->get_password($clr, $id, $passphrase);
+#  $viewer->{-text} = $pass->get_all();
+  $this->parent->draw();
+  if(defined $rv)
+  {
+    $this->parent->loose_focus() 
+  }
+  else
+  {
+    $this->parent->focus();
+  }
+  #  $this->loose_focus();
+}
+
+$cui->set_binding( \&exit_dialog , "\cQ");
+$cui->set_binding( \&exit_dialog , "\cX");
+$cui->set_binding( \&exit_dialog , "\cC");
+$cui->set_binding( \&exit_dialog , "\cD");
+$cui->set_binding( \&exit_dialog , CUI_ESCAPE());
+
+$searchbox->focus();
+$cui->mainloop();

@@ -1,0 +1,3 @@
+#!/bin/sh
+umask 0
+exec perl -I/usr/local/there/perllib -wT -Mstrict /usr/local/there/bin/$(basename $0) $@

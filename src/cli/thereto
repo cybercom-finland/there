@@ -1,0 +1,100 @@
+#!/usr/bin/perl -Tw
+
+#
+# Create password entries from the commandline.
+#
+
+use strict;
+
+use lib "../perllib";
+use There::PasswordGenerator;
+use There::API;
+use There::Directory;
+use There::Directory::Item;
+use There::Log;
+use Term::ReadKey;
+
+my $api = new There::API;
+
+print "ARGV after 'new There::API': ". join(", ", map "'$_'", @ARGV) ."\n" if $api->conf->debug();
+die usage() unless @ARGV;
+
+my($clearance, $passid, $descr, $password, $passphrase);
+
+$descr="";
+if(scalar(@ARGV) > 1)
+{
+  $descr = "@ARGV[1..$#ARGV]";
+  @ARGV = ($ARGV[0]);
+}
+
+$clearance = shift;
+if($clearance =~ /\//) 
+{
+  ($clearance, $passid) = split("/", $clearance, 2);
+}
+else
+{
+  die usage();
+}
+
+my $therepath = $api->conf()->therepath();
+print "There is at $therepath\n" if $api->conf->debug();
+
+print "Enter the text you want to store into $clearance/$passid\n";
+$password = <>;
+chomp $password;
+my $proceed = 0;
+until($proceed)
+{
+  print "Enter the passphrase for clearance $clearance\n";
+
+  ReadMode "noecho";
+  <> =~ /(.*)/;
+  $passphrase = $1;
+  ReadMode "restore";
+
+  chomp($passphrase);
+  
+  if($api->check_passphrase($clearance, "$passphrase"))
+  {
+    $proceed = 1;
+  }
+  else
+  {
+    print "Try again.\n";
+  }
+}
+
+if($api->store_password($clearance, $passid, $password, $passphrase))
+{
+  my $pass = $api->get_password($clearance, $passid, $passphrase);
+  print "Stored succesfully\n";
+  my $dir = new There::Directory;
+  
+  if($dir->update($passid, $clearance, $descr))
+  {
+    print "Directory updated successfully.\n";
+  }
+  else
+  {
+    print "Directory update failed. Sry.\n";
+  }
+  print "$_\n" for $pass->serialize();
+  exit 0;
+}
+else
+{
+  die "something went horribly wrong";
+}
+
+
+sub usage
+{
+  my $basename = $0;
+  $basename =~ s/.*\///;
+  return << "EOH";
+Usage:
+$basename [options] clearance/passid "description for the directory" 
+EOH
+}
