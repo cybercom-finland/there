@@ -321,7 +321,7 @@ sub add_password
   my $dir = new There::Directory();
 
   $api->create_password($clearance, $id, $data, $pass) or die "aargs";
-  $dir->update($id, $clearance, $desc) or die "whaddafuck";
+  $dir->update($id, $clearance, $desc) or die "whaddaheck";
 
   refresh_list($cui->getobj("win1")->getobj("searchbox"));
   return 1;
@@ -579,7 +579,7 @@ sub recursive_passphrase
 			    -onblur => sub {shift()->parent()->loose_focus()},
 			    );
 
-  my $fuckbutton = $cle1->add( 'fuck' => "Buttonbox" , -buttons => [], -x => 42 ); 
+  my $heckbutton = $cle1->add( 'heck' => "Buttonbox" , -buttons => [], -x => 42 ); 
   # allow the chooser to be a looser
 
   $cle1->modalfocus();
