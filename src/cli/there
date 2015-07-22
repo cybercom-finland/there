@@ -856,7 +856,7 @@ sub add_clearance
     return 0;
   }
 
-  my $algorithm = (There::API::get_algorithms())[$clrwin->getobj('algo')->get()-1];
+  my $algorithm = $clrwin->getobj('algo')->get();
 
   my $pass = get_and_confirm_passphrase($cui, "a passphrase for the new clearance '$name'");
   unless(defined $pass)
