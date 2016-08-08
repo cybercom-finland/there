@@ -576,7 +576,7 @@ sub get_password
   my $log = new There::Log();
   $log->syslog("INFO", 
 	       '"%s" viewed the password "%s" (clearance "%s")',
-	       getlogin(), $passid, $clearance);
+	       getpwuid($<), $passid, $clearance);
   return $pass;
 }
 

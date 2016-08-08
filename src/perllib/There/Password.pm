@@ -77,7 +77,7 @@ sub reboot
 sub change
 {
     my ($self, $new) = @_;
-    my $blamehim = getlogin();
+    my $blamehim = getpwuid($<);
     my $old = $self->contents() || "";
     $self->contents($old . "# Changed by $blamehim\n". $self->generate_serial() . " $new\n");
     $self->reboot();
