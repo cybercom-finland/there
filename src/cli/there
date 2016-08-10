@@ -828,6 +828,7 @@ sub get_and_confirm_passphrase
 sub add_clearance
 {
   my $buttons = shift;
+  my $algorithms = shift;
   my $clrwin = $buttons->parent();
   my $cui = $clrwin->root();
   my $api = new There::API;
@@ -856,7 +857,7 @@ sub add_clearance
     return 0;
   }
 
-  my $algorithm = $clrwin->getobj('algo')->get();
+  my $algorithm = $$algorithms{$clrwin->getobj('algo')->get()};
 
   my $pass = get_and_confirm_passphrase($cui, "a passphrase for the new clearance '$name'");
   unless(defined $pass)
@@ -939,7 +940,7 @@ sub newclearance
 					 -label => 'Ok',
 					 -onpress => sub {
 					   my $this = shift;
-					   my $r=add_clearance($this);
+					   my $r=add_clearance($this, \%algorithms);
 					   $this->parent->loose_focus()
 					     unless(defined $r and !$r);
 					   # 0 means try again
