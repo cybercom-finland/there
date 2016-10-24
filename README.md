@@ -2,7 +2,7 @@
 
 There is a tool for storing passwords.
 
-There are a Curses interface and an API.
+There has a Curses interface and an API.
 
 # General usage
 
